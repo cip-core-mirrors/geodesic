@@ -1,4 +1,4 @@
-export DOCKER_IMAGE ?= cloudposse/geodesic
+export DOCKER_IMAGE ?= cipcore/geodesic
 export DOCKER_TAG ?= dev
 export DOCKER_IMAGE_NAME ?= $(DOCKER_IMAGE):$(DOCKER_TAG)
 export DOCKER_BUILD_FLAGS =

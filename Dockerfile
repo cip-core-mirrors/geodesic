@@ -24,7 +24,7 @@ RUN python3 -m pip install --upgrade pip setuptools wheel && \
 #
 # Google Cloud SDK
 #
-FROM google/cloud-sdk:286.0.0-alpine as google-cloud-sdk
+FROM google/cloud-sdk:293.0.0-alpine as google-cloud-sdk
 
 #
 # Geodesic base image
@@ -97,7 +97,7 @@ ENV AWS_OKTA_ENABLED=false
 #
 # Set KUBERNETES_VERSION and KOPS_BASE_IMAGE in /conf/kops/kops.envrc
 RUN kubectl completion bash > /etc/bash_completion.d/kubectl.sh
-ENV KUBECTX_COMPLETION_VERSION 0.8.0
+ENV KUBECTX_COMPLETION_VERSION 0.9.0
 ADD https://raw.githubusercontent.com/ahmetb/kubectx/v${KUBECTX_COMPLETION_VERSION}/completion/kubens.bash /etc/bash_completion.d/kubens.sh
 ADD https://raw.githubusercontent.com/ahmetb/kubectx/v${KUBECTX_COMPLETION_VERSION}/completion/kubectx.bash /etc/bash_completion.d/kubectx.sh
 
