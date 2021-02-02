@@ -1,4 +1,5 @@
 function update_terraform_prompt() {
+	[[ ${GEODESIC_TF_PROMPT_ENABLED:-false} == "true" ]] || return 0
 	# Test if there are any files with names ending in ".tf"
 	if compgen -G '*.tf' >/dev/null; then
 		export GEODESIC_TF_PROMPT_ACTIVE=true
@@ -30,5 +31,10 @@ if which terraform >/dev/null; then
 	complete -C "$(which terraform)" terraform
 fi
 
-# Set default plugin cache dir
-export TF_PLUGIN_CACHE_DIR="${TF_PLUGIN_CACHE_DIR:-/localhost/.terraform.d/plugins}"
+for tf in /usr/bin/terraform-*; do
+	[[ -x $tf ]] && complete -C $tf $(basename $tf)
+done
+
+# Set default plugin cache dir (must not be one of the mirror directories)
+# https://www.terraform.io/docs/commands/cli-config.html#implied-local-mirror-directories)
+export TF_PLUGIN_CACHE_DIR="${TF_PLUGIN_CACHE_DIR:-/localhost/.terraform.d/plugin-cache}"

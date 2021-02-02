@@ -1,5 +1,8 @@
 #!/bin/bash
 
+# Forcibly disable aws-vault server in subshells
+[[ $SHLVL -gt 1 && AWS_VAULT_SERVER_ENABLED == "true" && -n $AWS_VAULT_SERVER_DISABLED ]] && export AWS_VAULT_SERVER_ENABLED="false: ${AWS_VAULT_SERVER_DISABLED}"
+
 function _validate_aws_vault_server() {
 	[[ ${AWS_VAULT_SERVER_ENABLED:-true} == "true" ]] || return 0
 
@@ -29,7 +32,7 @@ function _validate_aws_vault_server() {
 		echo "* $(yellow Connected to something at 169.254.169.254 but got status code ${curl_exit_code}. Force-starting aws-vault server.)"
 		_force_start_aws_vault_server
 	else
-		echo "* $(red Unexpected status code ${curl_exit_code} while probing for meta-data server. Disabling aws-vault server.)"
+		echo "* $(red "Unexpected status code ${curl_exit_code} while probing for meta-data server. Disabling aws-vault server.")"
 		export AWS_VAULT_SERVER_ENABLED="probe returned ${curl_exit_code}"
 	fi
 }
@@ -53,16 +56,28 @@ function assume_active_aws_role() {
 	[[ ${AWS_VAULT_SERVER_ENABLED:-true} == "true" ]] || return 0
 
 	local aws_default_profile="$AWS_DEFAULT_PROFILE"
-	trap 'AWS_DEFAULT_PROFILE=${AWS_DEFAULT_PROFILE:-$aws_default_profile}' RETURN
+	trap '[[ -n $aws_default_profile ]] && AWS_DEFAULT_PROFILE=${AWS_DEFAULT_PROFILE:-$aws_default_profile}' RETURN
 	unset AWS_DEFAULT_PROFILE
 
-	export TF_VAR_aws_assume_role_arn=$(aws sts get-caller-identity --output text --query 'Arn' | sed 's/:sts:/:iam:/g' | sed 's,:assumed-role/,:role/,' | cut -d/ -f1-2)
+	local sts=$({ aws sts get-caller-identity --output text --query 'Arn' ||
+		(
+			unset AWS_PROFILE
+			aws sts get-caller-identity --output text --query 'Arn'
+		); } 2>/dev/null)
+	export TF_VAR_aws_assume_role_arn=$(printf "%s\n" "$sts" | sed 's/:sts:/:iam:/g' | sed 's,:assumed-role/,:role/,' | cut -d/ -f1-2)
 	if [ -n "${TF_VAR_aws_assume_role_arn}" ]; then
 		export AWS_VAULT_SERVER_EXTERNAL=true
-		local aws_vault=$(crudini --get --format=lines "$AWS_CONFIG_FILE" | grep "$TF_VAR_aws_assume_role_arn" | cut -d' ' -f 3)
+		export AWS_VAULT_SERVER_DISABLED="server running in other shell session"
+
+		local aws_vault=$(crudini --get --format=lines "$AWS_CONFIG_FILE" | grep "$TF_VAR_aws_assume_role_arn" | head -1 | cut -d' ' -f 3)
 		if [[ -z $aws_vault ]]; then
-			echo "* $(red Could not find role name for ${TF_VAR_aws_assume_role_arn}\; calling it \"instance-role\")"
+			echo "* $(red "Could not find role name for ${TF_VAR_aws_assume_role_arn}\; calling it \"instance-role\"")"
 			aws-vault="instance-role"
+		else
+			export AWS_VAULT="$aws_vault"
+			unset AWS_PROFILE
+			unset AWS_DEFAULT_PROFILE
+			unset aws_default_profile
 		fi
 		if [[ -z $AWS_VAULT || $AWS_VAULT == $aws_vault ]]; then
 			echo "* $(green Attaching to exising aws-vault session and assuming role) $(cyan ${aws_vault})"
@@ -72,7 +87,7 @@ function assume_active_aws_role() {
 		fi
 	else
 		unset TF_VAR_aws_assume_role_arn
-		export AWS_DEFAULT_PROFILE=${aws_default_profile}
+		[[ -n $aws_default_profile ]] && export AWS_DEFAULT_PROFILE=${aws_default_profile}
 		export AWS_VAULT_SERVER_ENABLED="get-caller-identity failed"
 	fi
 }
@@ -111,7 +126,11 @@ function sync_clocks() {
 	fi
 }
 
-if [ "${AWS_VAULT_ENABLED:-true}" == "true" ]; then
+if [[ "${AWS_VAULT_ENABLED:-true}" != "true" ]]; then
+	# Even if we are not going to turn on Geodesic support for aws-vault, we
+	# want to enable aws-vault use if a configuration already exits.
+	[[ -d /localhost/.awsvault ]] && ln -sf /localhost/.awsvault ${HOME}
+else
 	if ! which aws-vault >/dev/null; then
 		echo "aws-vault not installed"
 		exit 1
@@ -129,11 +148,55 @@ if [ "${AWS_VAULT_ENABLED:-true}" == "true" ]; then
 		fi
 	else
 		AWS_VAULT_ARGS=()
-		AWS_VAULT_ARGS+=("--duration=${AWS_VAULT_DURATION:-1h}")
+		# For clarity, Geodesic prefers to use env vars beginning with AWS_VAULT to configure AWS_VAULT:
+		#   AWS_VAULT_ASSUME_ROLE_TTL=1h
+		#   AWS_VAULT_SESSION_TTL=12h
+		#   and new with aws-vault version 5: AWS_VAULT_CHAINED_SESSION_TOKEN_TTL=8h
+		#
+		# However, we should honor the official aws-vault environment variables if they are set and AWS_VAULT_* are not.
+		# Unfortunately, the official variables changed between aws-vault version 4 and version 5.
+		# For aws-vault v4: https://github.com/99designs/aws-vault/blob/v4.7.1/USAGE.md#environment-variables
+		#	AWS_ASSUME_ROLE_TTL: Expiration time for aws assumed role (see the flag --assume-role-ttl)
+		#	AWS_SESSION_TTL: Expiration time for aws session (see the flag --session-ttl)
+		# For aws-vault v5: https://github.com/99designs/aws-vault/blob/v5.4.0/USAGE.md#environment-variables
+		#	AWS_ASSUME_ROLE_TTL: Expiration time for the AssumeRole credentials. Defaults to 1h
+		#	AWS_SESSION_TOKEN_TTL: Expiration time for the GetSessionToken credentials. Defaults to 1h
+		#	AWS_CHAINED_SESSION_TOKEN_TTL: Expiration time for the GetSessionToken credentials when chaining profiles. Defaults to 8h
+		#
+		# Also the flag called --assume-role-ttl in v4 was renamed to --duration in v5
+		# So now we skip setting flags, and use environment variables instead, particularly because the v5 variables
+		# do not all have command line equivalents.
+		if [[ -n $AWS_VAULT_ASSUME_ROLE_TTL ]]; then
+			if [[ -n $AWS_ASSUME_ROLE_TTL ]]; then
+				echo "* $(red "aws-vault: overriding AWS_ASSUME_ROLE_TTL (${AWS_ASSUME_ROLE_TTL}) with AWS_VAULT_ASSUME_ROLE_TTL (${AWS_VAULT_ASSUME_ROLE_TTL})")"
+			fi
+			export AWS_ASSUME_ROLE_TTL=${AWS_VAULT_ASSUME_ROLE_TTL}
+		fi
 
-		if [[ -n $AWS_SESSION_TTL ]]; then
-			[[ -n $AWS_SESSION_TOKEN_TTL ]] || export $AWS_CHAINED_SESSION_TOKEN_TTL="${AWS_SESSION_TTL}"
-			[[ -n $AWS_CHAINED_SESSION_TOKEN_TTL ]] || export $AWS_CHAINED_SESSION_TOKEN_TTL="${AWS_SESSION_TTL}"
+		if aws-vault exec --help 2>&1 | grep -q -e --duration; then # aws-vault version 5
+			if [[ -n $AWS_VAULT_SESSION_TTL ]]; then
+				# AWS_VAULT_SESSION_TTL takes priority
+				if [[ -n $AWS_SESSION_TOKEN_TTL ]]; then
+					echo "* $(red "aws-vault: overriding AWS_SESSION_TOKEN_TTL (${AWS_SESSION_TOKEN_TTL}) with AWS_VAULT_SESSION_TTL (${AWS_VAULT_SESSION_TTL})")"
+				fi
+				export AWS_SESSION_TOKEN_TTL=${AWS_VAULT_SESSION_TTL}
+			elif [[ -z $AWS_SESSION_TOKEN_TTL ]] && [[ -n $AWS_SESSION_TTL ]]; then
+				echo "* $(green "aws-vault: copying version 4 AWS_SESSION_TTL (${AWS_SESSION_TTL}) to version 5 variable AWS_SESSION_TOKEN_TTL")"
+				export AWS_SESSION_TOKEN_TTL=${AWS_SESSION_TTL}
+			fi
+			if [[ -n $AWS_VAULT_CHAINED_SESSION_TOKEN_TTL ]]; then
+				if [[ -n $AWS_CHAINED_SESSION_TOKEN_TTL ]]; then
+					echo "* $(red "aws-vault: overriding AWS_CHAINED_SESSION_TOKEN_TTL (${AWS_CHAINED_SESSION_TOKEN_TTL}) with AWS_VAULT_CHAINED_SESSION_TOKEN_TTL (${AWS_VAULT_CHAINED_SESSION_TOKEN_TTL})")"
+					export AWS_CHAINED_SESSION_TOKEN_TTL=${AWS_VAULT_CHAINED_SESSION_TOKEN_TTL}
+				fi
+			fi
+			[[ -n $AWS_SESSION_TOKEN_TTL ]] && [[ -z $AWS_CHAINED_SESSION_TOKEN_TTL ]] && export AWS_CHAINED_SESSION_TOKEN_TTL="${AWS_SESSION_TOKEN_TTL}"
+		elif [[ -n $AWS_VAULT_SESSION_TTL ]]; then # aws-vault version 4
+			# AWS_VAULT_SESSION_TTL takes priority
+			if [[ -n AWS_SESSION_TTL ]]; then
+				echo "* $(red "aws-vault: overriding AWS_SESSION_TTL (${AWS_SESSION_TTL}) with AWS_VAULT_SESSION_TTL (${AWS_VAULT_SESSION_TTL})")"
+			fi
+			export AWS_SESSION_TTL=${AWS_VAULT_SESSION_TTL}
 		fi
 
 		[ -d /localhost/.awsvault ] || mkdir -p /localhost/.awsvault
@@ -145,29 +208,16 @@ if [ "${AWS_VAULT_ENABLED:-true}" == "true" ]; then
 
 	PROMPT_HOOKS+=("aws_vault_prompt")
 	function aws_vault_prompt() {
-		if [ -z "${AWS_VAULT}" ]; then
+		if [[ -z "${AWS_VAULT}" && -z "${ASSUME_ROLE}" ]]; then
 			echo -e "-> Run '$(green assume-role)' to login to AWS with aws-vault"
 		fi
 	}
 
-	function choose_role_interactive() {
-		_preview="${FZF_PREVIEW:-crudini --format=ini --get "$AWS_CONFIG_FILE" 'profile {}'}"
-		crudini --get "${AWS_CONFIG_FILE}" |
-			awk -F ' ' '{print $2}' |
-			fzf \
-				--height 30% \
-				--preview-window right:70% \
-				--reverse \
-				--select-1 \
-				--prompt='-> ' \
-				--header 'Select AWS profile' \
-				--query "${ASSUME_ROLE_INTERACTIVE_QUERY:-${NAMESPACE}-${STAGE}-}" \
-				--preview "$_preview"
-	}
-
-	function choose_role() {
-		if [ "${ASSUME_ROLE_INTERACTIVE:-true}" == "true" ]; then
-			echo "$(choose_role_interactive)"
+	function aws_vault_choose_role() {
+		if [[ -n $AWS_PROFILE && -z $AWS_VAULT ]]; then
+			echo "$AWS_PROFILE"
+		elif [ "${ASSUME_ROLE_INTERACTIVE:-true}" == "true" ]; then
+			echo "$(aws_choose_role)"
 		else
 			echo "${AWS_DEFAULT_PROFILE}"
 		fi
@@ -175,7 +225,7 @@ if [ "${AWS_VAULT_ENABLED:-true}" == "true" ]; then
 
 	# Start a shell or run a command with an assumed role
 	function _aws_vault_assume_role() {
-		# Do not allow nested roles
+		# Do not allow nested aws-vault sessions (AWS_VAULT is automatically set by aws-vault to the profile it is using)
 		if [ -n "${AWS_VAULT}" ]; then
 			# There is an exception to the "Do not allow nested roles" rule.
 			# If we are in the current role because we are piggybacking off of an aws-vault credential server
@@ -191,17 +241,17 @@ if [ "${AWS_VAULT_ENABLED:-true}" == "true" ]; then
 				# this function returns, regardless of how it returns (e.g. in case of errors).
 				trap 'export AWS_VAULT="$aws_vault" && export AWS_VAULT_SERVER_ENABLED="$aws_vault_server_enabled"' RETURN
 				unset AWS_VAULT
-				AWS_VAULT_SERVER_ENABLED="false: server serving other role"
+				AWS_VAULT_SERVER_DISABLED="server running in other shell session"
 			else
 				echo "Type '$(green exit)' before attempting to assume another role"
 				return 1
 			fi
 		fi
 
-		role=${1:-$(choose_role)}
+		role=${1:-$(aws_vault_choose_role)}
 
 		if [ -z "${role}" ]; then
-			echo "Usage: assume-role [role]"
+			echo "Usage: assume-role <role> [command...]"
 			return 1
 		fi
 
@@ -210,6 +260,7 @@ if [ "${AWS_VAULT_ENABLED:-true}" == "true" ]; then
 		fi
 
 		shift
+		[[ "${AWS_VAULT_SERVER_ENABLED:-true}" == "true" ]] && export AWS_VAULT_SERVER_DISABLED="${AWS_VAULT_SERVER_DISABLED:-server already started}"
 		if [ $# -eq 0 ]; then
 			aws-vault exec ${AWS_VAULT_ARGS[@]} $role -- bash -l
 		else
@@ -218,7 +269,12 @@ if [ "${AWS_VAULT_ENABLED:-true}" == "true" ]; then
 	}
 
 	function assume-role() {
-		_aws_vault_assume_role $*
+		if [[ -n "${AWS_VAULT}" && ${AWS_VAULT_SERVER_DISABLED:-false} != "false" ]]; then
+			green "* aws-vault is already running; changing roles via AWS_PROFILE" && sleep 2
+			aws_sdk_assume_role $*
+		else
+			_aws_vault_assume_role $*
+		fi
 	}
 
 	function role-server() {
@@ -232,7 +288,7 @@ if [ "${AWS_VAULT_ENABLED:-true}" == "true" ]; then
 		trap 'AWS_VAULT_ARGS=("${aws_vault_args[@]}")' RETURN
 
 		[[ ${AWS_VAULT_ARGS[*]} =~ --debug ]] || AWS_VAULT_ARGS+=("--debug")
-		_aws_vault_assume_role "${1:-$(choose_role)}" sleep inf
+		_aws_vault_assume_role "${1:-$(aws_vault_choose_role)}" sleep inf
 	}
 
 fi

@@ -1,0 +1,13 @@
+# Essential alpine-only packages
+busybox-extras
+drill
+fzf-bash-completion
+iputils
+keybase-client@testing
+libc6-compat
+libltdl
+make
+musl-dev
+mysql-client
+ncurses
+oath-toolkit-oathtool@community

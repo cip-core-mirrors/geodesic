@@ -9,18 +9,33 @@ function kube_ps1_helper() {
 	# This will probably be a supported option in v0.8.0 but this is the cheapest
 	# solution for now.
 	# https://github.com/jonmosco/kube-ps1/issues/115
-	[[ $KUBE_PS1_CONTEXT == "N/A" ]] && KUBE_PS1_CONTEXT=""
+	if [[ $KUBE_PS1_CONTEXT == "N/A" ]]; then
+		KUBE_PS1_CONTEXT=""
+	fi
 
 	# Update the prompt if the kubecfg file is deleted.
 	# https://github.com/jonmosco/kube-ps1/issues/118
-	[[ -n $KUBE_PS1_CONTEXT ]] && [[ ! -r "${KUBECONFIG}" ]] && KUBE_PS1_CONTEXT=""
-
+	if [[ -n $KUBE_PS1_CONTEXT ]] && [[ ! -r "${KUBECONFIG}" ]]; then
+		KUBE_PS1_CONTEXT=""
+	fi
 }
 
-# This shortens the cluster name based on our EKS cluster naming pattern,
-# taking just the characters between the first and second dashes after "cluster/".
+# This shortens the cluster name of EKS clusters.
 # It should not affect other cluster names, so should be safe as default.
+# Users can override it if they want to.
 function short_cluster_name_from_eks() {
-	printf "%s" "$1" | sed -e 's%arn.*:cluster/[^-]\+-\([^-]\+\)-.*$%\1%'
+	# If it is not a cluster ARN, leave it alone
+	if ! [[ $1 =~ ^arn:.*:cluster/ ]]; then
+		printf "%s" "$1"
+		return 0
+	fi
+	local full_name=$(printf "%s" "$1" | cut -d/ -f2)
+	# remove namespace prefix if present
+	full_name=${full_name#${NAMESPACE}-}
+	# remove eks and everything after it, if present
+	full_name=${full_name%-eks-*}
+	printf "%s" "${full_name}"
+	# If NAMESPACE is unset, delete everything before and including the first dash
+	# printf "%s" "$1" | sed -e 's%arn.*:cluster/'"${NAMESPACE:-[^-]\+}"'-\([^-]\+\)-eks-.*$%\1%'
 }
-KUBE_PS1_CLUSTER_FUNCTION=short_cluster_name_from_eks
+[[ -z $KUBE_PS1_CLUSTER_FUNCTION ]] && KUBE_PS1_CLUSTER_FUNCTION=short_cluster_name_from_eks
