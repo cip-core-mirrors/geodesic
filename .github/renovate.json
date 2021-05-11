@@ -1,7 +1,8 @@
 {
   "timezone": "America/Los_Angeles",
   "extends": [
-    "config:base"
+    "config:base",
+    "docker:disableMajor"
   ],
   "packageRules": [
     {

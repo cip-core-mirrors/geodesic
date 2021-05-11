@@ -1,12 +1,21 @@
 #!/bin/bash
 
+export AWS_REGION_ABBREVIATION_TYPE=${AWS_REGION_ABBREVIATION_TYPE:-fixed}
+export AWS_DEFAULT_SHORT_REGION=${AWS_DEFAULT_SHORT_REGION:-$(aws-region --${AWS_REGION_ABBREVIATION_TYPE} ${AWS_DEFAULT_REGION:-us-west-2})}
+export GEODESIC_AWS_HOME="${GEODESIC_AWS_HOME:-/localhost/.aws}"
+
 # `aws configure` does not respect ENVs
 if [ ! -e "${HOME}/.aws" ]; then
-	ln -s "${GEODESIC_AWS_HOME:-/localhost/.aws}" "${HOME}/.aws"
+	# -e fails if the target is a link to a non-existent file, remove dead link if it exists
+	[ -L "${HOME}/.aws" ] && rm -f "${HOME}/.aws"
+	if [ ! -d "${GEODESIC_AWS_HOME}" ]; then
+		mkdir ${GEODESIC_AWS_HOME} && chmod 700 ${GEODESIC_AWS_HOME}
+	fi
+	ln -s "${GEODESIC_AWS_HOME}" "${HOME}/.aws"
 fi
 
-if [ ! -f "${AWS_CONFIG_FILE:=${GEODESIC_AWS_HOME:-/localhost/.aws}/config}" ]; then
-	echo "* Initializing ${AWS_CONFIG_FILE}"
+if [ ! -f "${AWS_CONFIG_FILE:=${GEODESIC_AWS_HOME}/config}" ] && [ -d ${GEODESIC_AWS_HOME} ]; then
+	echo "# Initializing ${AWS_CONFIG_FILE}"
 	# Required for AWS_PROFILE=default
 	echo '[default]' >${AWS_CONFIG_FILE}
 fi
@@ -40,7 +49,6 @@ function aws_choose_role() {
 			--preview "$_preview"
 }
 
-
 function aws_sdk_assume_role() {
 	local role=$1
 	shift
@@ -67,10 +75,25 @@ function aws_sdk_assume_role() {
 function export_current_aws_role() {
 	local role_name
 	# Could be a primary or assumed role. If we have assumed a role, cut off the session name.
-	local current_role=$(aws sts get-caller-identity --output text --query 'Arn' | cut -d/ -f1-2 2>/dev/null)
+	local current_role=$(aws sts get-caller-identity --output text --query 'Arn' 2>/dev/null | cut -d/ -f1-2)
 	if [[ -z $current_role ]]; then
 		unset ASSUME_ROLE
 		return 0
+	fi
+
+	# Quick check, are we who we say we are?
+	local profile_arn
+	local profile_target=${AWS_PROFILE:-${AWS_VAULT}}
+	if [[ -n $profile_target ]]; then
+		profile_arn=$(aws --profile "${profile_target}" sts get-caller-identity --output text --query 'Arn' 2>/dev/null | cut -d/ -f1-2)
+		if [[ $profile_arn == $current_role ]]; then
+			export ASSUME_ROLE="$profile_target"
+			return
+		fi
+		echo "* $(red Profile is set to $profile_target but current role does not match:)"
+		echo "*   $(red $current_role)"
+		export ASSUME_ROLE=$(red '!mixed!')
+		return
 	fi
 
 	# saml2aws will store the assumed role from sign-in as x_principal_arn in credentials file
@@ -91,10 +114,10 @@ function export_current_aws_role() {
 	if [[ -z $role_name ]]; then
 		if [[ "$role_arn" =~ "role/OrganizationAccountAccessRole" ]]; then
 			role_name="$(printf "%s" "$role_arn" | cut -d: -f 5):OrgAccess"
-			echo "* $(red "Could not find profile name for ${role_arn}\; calling it \"${role_name}\"")" >&2
+			echo "* $(red "Could not find profile name for ${role_arn} ; calling it \"${role_name}\"")" >&2
 		else
 			role_name="$(printf "%s" "$role_arn" | cut -d/ -f 2)"
-			echo "* $(green "Could not find profile name for ${role_arn}\; calling it \"${role_name}\"")" >&2
+			echo "* $(green "Could not find profile name for ${role_arn} ; calling it \"${role_name}\"")" >&2
 		fi
 	fi
 	export ASSUME_ROLE="$role_name"

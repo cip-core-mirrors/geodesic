@@ -1,9 +1,11 @@
 # Pin requests because it creates dependency conflicts with urllib3
 requests==2.25.1
-PyYAML==5.3.1
-ansible==2.10.6
-awscli==1.18.223
+# Pin crypography because later version require `setuptools_rust` which is not available for Alpine
+# See: https://github.com/Azure/azure-cli/issues/16858
+cryptography==3.4.7
+PyYAML==5.4.1
+awscli==1.19.69
 boto==2.49.0
-boto3==1.16.63
+boto3==1.17.69
 crudini==0.9.3
 Jinja2==2.11.3
