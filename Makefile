@@ -1,4 +1,4 @@
-export DOCKER_IMAGE ?= cipcore/geodesic
+export DOCKER_IMAGE ?= quay.io/cipcore/geodesic
 export DOCKER_BASE_TAG ?= dev
 export DOCKER_BASE_OS ?= alpine
 export DOCKER_TAG ?= $(DOCKER_BASE_TAG)-$(DOCKER_BASE_OS)
