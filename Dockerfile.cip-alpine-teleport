@@ -1,0 +1,6 @@
+ARG GEODESIC_IMAGE="quay.io/cipcore/geodesic"
+ARG GEODESIC_TAG="cip-alpine"
+
+FROM $GEODESIC_IMAGE:$GEODESIC_TAG
+
+ENTRYPOINT [ "teleport" ]

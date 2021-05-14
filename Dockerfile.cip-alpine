@@ -10,12 +10,12 @@ ARG ATMOS_VERSION="0.18.0"
 
 FROM $GEODESIC_IMAGE:$GEODESIC_VERSION-$GEODESIC_OS
 
-ARG OC_VERSION="4.7.10" \
-    ODO_VERSION="v2.2.0" \
-    KN_VERSION="0.20.0" \
-    TKN_VERSION="0.17.2" \
-    ROSA_VERSION="1.0.5" \
-    ATMOS_VERSION="0.18.0"
+ARG OC_VERSION="4.7.10"
+ARG ODO_VERSION="v2.2.0"
+ARG KN_VERSION="0.20.0"
+ARG TKN_VERSION="0.17.2"
+ARG ROSA_VERSION="1.0.5"
+ARG ATMOS_VERSION="0.18.0"
 
 # CIP additional tools 
 RUN apk update && \
@@ -45,8 +45,10 @@ RUN apk update && \
     echo "rosa client version: $(rosa version)"  && \
     curl -sSLo /usr/local/bin/atmos https://github.com/cloudposse/atmos/releases/download/$ATMOS_VERSION/atmos_${ATMOS_VERSION}_linux_amd64 && \
     chmod +x /usr/local/bin/atmos && \
-    echo "atmos version: $(atmos version)"
-
+    echo "atmos version: $(atmos version)" && \
+    curl -sSLo /usr/local/bin/teleport https://github.com/cip-core-mirrors/teleport-cip/releases/download/7.0.0/teleport && \
+    chmod +x /usr/local/bin/teleport && \
+    echo "teleport version: $(teleport version)"
 
 # Banner is what is displayed at startup and on every command line
 # in order to distinguish this image from other similar images
