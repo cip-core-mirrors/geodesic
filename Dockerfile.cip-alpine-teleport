@@ -3,4 +3,8 @@ ARG GEODESIC_TAG="cip-alpine"
 
 FROM $GEODESIC_IMAGE:$GEODESIC_TAG
 
+RUN curl -sSLo /usr/local/bin/teleport https://github.com/cip-core-mirrors/teleport-cip/releases/download/7.0.0/teleport && \
+    chmod +x /usr/local/bin/teleport && \
+    echo "teleport version: $(teleport version)"
+
 ENTRYPOINT [ "teleport" ]
